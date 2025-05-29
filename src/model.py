@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import torch.nn as nn
+import math
 
 """
 In the self initialization of each class, we just need to transform the input 
@@ -10,7 +11,6 @@ in TransformerDecoder and TransformerEncoder, we will just use the previous clas
 to do our computations
 
 in Seq2Seq we will use TransformerEncoder and TransformerDecoder
-
 """
 
 class PositionalEncoding(nn.Module):
@@ -49,26 +49,34 @@ class MultiHeadAttention(nn.Module):
         self.out_proj = nn.Linear(d_model, d_model)
 
     def forward(self, x, context=None, mask=None):
-        # x: [batch_size, seq_len, d_model] (used as query matrix)
-        # context: [batch_size, context_len, d_model] (used as key and value). Do self attention if None
-        # mask: [batch_size, seq_len, context_len] or [seq_len, context_len], used to mask out padding or future positions.
-        # Returns: Attention output of shape [batch_size, seq_len, d_model]
         if context is None:
             context = x
         B, T, _ = x.size()
+        B2, S, _ = context.size()
+
+        assert B == B2, f"Batch size mismatch: {B} vs {B2}"
+
         Q = self.q_proj(x)
         K = self.k_proj(context)
         V = self.v_proj(context)
-        Q = Q.view(B, T, self.num_heads, self.d_head).transpose(1, 2)
-        K = K.view(B, -1, self.num_heads, self.d_head).transpose(1, 2)
-        V = V.view(B, -1, self.num_heads, self.d_head).transpose(1, 2)
+        Q = Q.view(B, T, self.num_heads, self.d_head).transpose(1, 2)  # (B, nh, T, dh)
+        K = K.view(B, S, self.num_heads, self.d_head).transpose(1, 2)  # (B, nh, S, dh)
+        V = V.view(B, S, self.num_heads, self.d_head).transpose(1, 2)  # (B, nh, S, dh)
+
         scores = (Q @ K.transpose(-2, -1)) / math.sqrt(self.d_head)
+
         if mask is not None:
+            if mask.dim() == 2:
+                mask = mask.unsqueeze(0).unsqueeze(1)  # (1, 1, T, S)
+            elif mask.dim() == 3:
+                mask = mask.unsqueeze(1)  # (B, 1, T, S)
             scores = scores.masked_fill(mask == 0, float('-inf'))
+
         attn = torch.softmax(scores, dim=-1)
-        out = (attn @ V).transpose(1, 2).reshape(B, T, -1)
+        out = (attn @ V).transpose(1, 2).reshape(B, T, -1)  # (B, T, d_model)
         return self.out_proj(out)
-        pass
+
+
 
 class FeedForward(nn.Module):
     def __init__(self, d_model, d_ff):
@@ -110,7 +118,7 @@ class TransformerEncoderBlock(nn.Module):
         # x: [batch_size, seq_len, d_model]
         # mask: [batch_size, seq_len, seq_len] or [seq_len, seq_len]
         # Output: encoded x of shape [batch_size, seq_len, d_model]
-        pass
+
 
 class TransformerDecoderBlock(nn.Module):
     def __init__(self, d_model, num_heads, d_ff, dropout=0.1):
@@ -138,16 +146,17 @@ class TransformerDecoderBlock(nn.Module):
         # tgt_mask: prevents attending to future tokens
         # src_mask: masks padding in encoder output
         # Output: decoded x of shape [batch_size, tgt_seq_len, d_model]
-        pass
+
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, vocab_size, d_model, num_heads, d_ff, num_layers, max_len=512):
+    def __init__(self, vocab_size, d_model, num_heads, d_ff, num_layers, max_len=512, dropout=0.3):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.pos_encoding = PositionalEncoding(d_model, max_len)
         self.layers = nn.ModuleList([
-            TransformerEncoderBlock(d_model, num_heads, d_ff) for _ in range(num_layers)
+            TransformerEncoderBlock(d_model, num_heads, d_ff, dropout) for _ in range(num_layers)
         ])
+
         # Embedding layer: token embeddings of shape [vocab_size, d_model]
         # Positional encoding: added to token embeddings
         # Stack of `num_layers` TransformerEncoderBlock layers
@@ -161,17 +170,18 @@ class TransformerEncoder(nn.Module):
         # x: [batch_size, seq_len] (token indices)
         # mask: optional attention mask for padding
         # Output: encoded representation of shape [batch_size, seq_len, d_model]
-        pass
+
 
 class TransformerDecoder(nn.Module):
-    def __init__(self, vocab_size, d_model, num_heads, d_ff, num_layers, max_len=512):
+    def __init__(self, vocab_size, d_model, num_heads, d_ff, num_layers, max_len=512, dropout=0.3):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.pos_encoding = PositionalEncoding(d_model, max_len)
         self.layers = nn.ModuleList([
-            TransformerDecoderBlock(d_model, num_heads, d_ff) for _ in range(num_layers)
+            TransformerDecoderBlock(d_model, num_heads, d_ff, dropout) for _ in range(num_layers)
         ])
         self.fc_out = nn.Linear(d_model, vocab_size)
+
 
         # Embedding + positional encoding for target input tokens
         # Stack of `num_layers` TransformerDecoderBlock layers
@@ -188,13 +198,14 @@ class TransformerDecoder(nn.Module):
         # tgt_mask: prevents peeking ahead
         # src_mask: masks encoder outputs
         # Output: logits of shape [batch_size, tgt_seq_len, vocab_size]
-        pass
+
 
 class Seq2SeqTransformer(nn.Module):
-    def __init__(self, src_vocab_size, tgt_vocab_size, d_model, num_heads, d_ff, num_layers, max_len=512):
+    def __init__(self, src_vocab_size, tgt_vocab_size, d_model, num_heads, d_ff, num_layers, max_len=512, dropout=0.3):
         super().__init__()
-        self.encoder = TransformerEncoder(src_vocab_size, d_model, num_heads, d_ff, num_layers, max_len)
-        self.decoder = TransformerDecoder(tgt_vocab_size, d_model, num_heads, d_ff, num_layers, max_len)
+        self.encoder = TransformerEncoder(src_vocab_size, d_model, num_heads, d_ff, num_layers, max_len, dropout)
+        self.decoder = TransformerDecoder(tgt_vocab_size, d_model, num_heads, d_ff, num_layers, max_len, dropout)
+
         # Full Transformer model combining:
         # - Encoder (embedding + positional encoding + encoder blocks)
         # - Decoder (embedding + positional encoding + decoder blocks + final projection)
@@ -207,4 +218,4 @@ class Seq2SeqTransformer(nn.Module):
         # src_mask: optional mask for source padding
         # tgt_mask: mask for decoder input (including future positions)
         # Output: logits of shape [batch_size, tgt_seq_len, tgt_vocab_size]
-        pass
+
