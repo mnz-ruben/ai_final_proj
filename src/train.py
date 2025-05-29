@@ -16,7 +16,7 @@ num_heads = 8
 d_ff = 2048
 num_layers = 6
 lr = 1e-4
-n_epochs = 5
+n_epochs = 10
 batch_size = 32
 grad_clip = 1.0
 
